@@ -2,36 +2,21 @@ use regex::Regex;
 use serde::Deserialize;
 
 use std::fmt::{self, Display, Formatter};
-use std::fs::{remove_file, File};
+use std::fs::{remove_file, write, File};
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::{self};
+use std::process;
 
 use crate::scarb::{scarb_build, scarb_run, scarb_test};
 
 const I_AM_DONE_REGEX: &str = r"(?m)^\s*///?\s*I\s+AM\s+NOT\s+DONE";
 const CONTEXT: usize = 2;
 
-// Get a temporary file name that is hopefully unique
-#[inline]
-fn temp_file() -> String {
-    let thread_id: String = format!("{:?}", std::thread::current().id())
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .collect();
-
-    format!("./temp_{}_{thread_id}", process::id())
-}
-
-// The mode of the exercise.
 #[derive(Deserialize, Copy, Clone, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
-    // Indicates that the exercise should be compiled as a binary
     Build,
-    // Indicates that the exercise should run
     Run,
-    // Indicates that the exercise should be tested
     Test,
 }
 
@@ -40,47 +25,30 @@ pub struct ExerciseList {
     pub exercises: Vec<Exercise>,
 }
 
-// A representation of a starklings exercise.
-// This is deserialized from the accompanying info.toml file
 #[derive(Deserialize, Debug)]
 pub struct Exercise {
-    // Name of the exercise
     pub name: String,
-    // The path to the file containing the exercise's source code
     pub path: PathBuf,
-    // The mode of the exercise (Test/Build)
     pub mode: Mode,
-    // The hint text associated with the exercise
     pub hint: String,
 }
 
-// An enum to track of the state of an Exercise.
-// An Exercise can be either Done or Pending
 #[derive(PartialEq, Debug)]
 pub enum State {
-    // The state of the exercise once it's been completed
     Done,
-    // The state of the exercise while it's not completed yet
     Pending(Vec<ContextLine>),
 }
 
-// The context information of a pending exercise
 #[derive(PartialEq, Debug)]
 pub struct ContextLine {
-    // The source code that is still pending completion
     pub line: String,
-    // The line number of the source code still pending completion
     pub number: usize,
-    // Whether or not this is important
     pub important: bool,
 }
 
-// A representation of an already executed binary
 #[derive(Debug)]
 pub struct ExerciseOutput {
-    // The textual contents of the standard output of the binary
     pub stdout: String,
-    // The textual contents of the standard error of the binary
     pub stderr: String,
 }
 
@@ -147,20 +115,54 @@ impl Exercise {
         State::Pending(context)
     }
 
-    // Check that the exercise looks to be solved using self.state()
-    // This is not the best way to check since
-    // the user can just remove the "I AM NOT DONE" string from the file
-    // without actually having solved anything.
-    // The only other way to truly check this would to compile and run
-    // the exercise; which would be both costly and counterintuitive
     pub fn looks_done(&self) -> bool {
         self.state() == State::Done
+    }
+
+    pub fn mark_done(&self) -> anyhow::Result<()> {
+        let mut source_file = File::open(&self.path)?;
+        let mut source = String::new();
+        source_file.read_to_string(&mut source)?;
+
+        let updated_source = source.replace(regex::Regex::new(I_AM_DONE_REGEX)?, "");
+        write(&self.path, updated_source)?;
+
+        Ok(())
     }
 }
 
 impl Display for Exercise {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}", self.path.to_str().unwrap())
+    }
+}
+
+pub fn create_new_exercise(name: &str, path: &str, mode: Mode, hint: &str) -> Exercise {
+    Exercise {
+        name: name.to_string(),
+        path: PathBuf::from(path),
+        mode,
+        hint: hint.to_string(),
+    }
+}
+
+pub fn display_exercise_info(exercise: &Exercise) {
+    println!("Exercise: {}", exercise.name);
+    println!("Path: {:?}", exercise.path);
+    println!("Mode: {:?}", exercise.mode);
+    println!("Hint: {}", exercise.hint);
+}
+
+pub fn display_exercise_state(exercise: &Exercise) {
+    match exercise.state() {
+        State::Done => println!("Exercise '{}' is marked as DONE.", exercise.name),
+        State::Pending(context) => {
+            println!("Exercise '{}' is NOT DONE. Context:", exercise.name);
+            for line in context {
+                let marker = if line.important { "*" } else { "" };
+                println!("{} {}: {}", marker, line.number, line.line);
+            }
+        }
     }
 }
 
@@ -172,7 +174,6 @@ fn clean() {
 #[cfg(test)]
 mod test {
     use super::*;
-    // use std::path::Path;
 
     #[test]
     fn test_finished_exercise() {
